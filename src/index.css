@@ -1,0 +1,65 @@
+@import "tailwindcss";
+
+/* Theme tokens */
+@theme {
+  --font-sans: "Inter", "Noto Sans KR", ui-sans-serif, system-ui, -apple-system;
+}
+
+@layer base {
+  html, body, #root { height: 100%; }
+  body { 
+    @apply antialiased;
+    font-family: var(--font-sans);
+    background: #fff;
+    color: #222;
+    transition: background 0.5s, color 0.5s;
+  }
+  .dark body {
+    background: #18181b;
+    color: #e5e7eb;
+    transition: background 0.5s, color 0.5s;
+  }
+}
+
+/* 다크모드 카드/박스/텍스트/테두리/그림자 스타일 */
+.dark .bg-white,
+.dark .bg-white\/90 {
+  background-color: #232329 !important;
+  transition: background-color 0.5s;
+}
+.dark .border-slate-200 {
+  border-color: #333642 !important;
+  transition: border-color 0.5s;
+}
+.dark .text-slate-800 {
+  color: #e5e7eb !important;
+  transition: color 0.5s;
+}
+.dark .shadow-lg,
+.dark .shadow-2xl {
+  box-shadow: 0 4px 32px rgba(0,0,0,0.5) !important;
+}
+
+/* 네온 팔레트용 커스텀 컬러 변수 사용 예시 */
+.bg-[var(--acc)] { background-color: var(--acc); }
+.text-[var(--accText)] { color: var(--accText); }
+
+/* Modern range slider (theme color via --acc) */
+.range-modern {
+  appearance: none; height: 12px; width: 100%; border-radius: 9999px;
+  background: linear-gradient(to right, var(--acc) var(--fill, 50%), rgb(226 232 240) var(--fill, 50%));
+  outline: none; transition: background-size .2s ease;
+}
+.range-modern:hover { filter: saturate(1.05); }
+.range-modern::-webkit-slider-thumb {
+  appearance: none; width: 24px; height: 24px; border-radius: 9999px; background: #fff;
+  border: 2px solid var(--acc); box-shadow: 0 2px 8px rgba(2,6,23,.15); transition: transform .15s ease;
+}
+.range-modern:active::-webkit-slider-thumb { transform: scale(1.05); }
+.range-modern::-moz-range-track { height: 12px; border-radius: 9999px; background: transparent; }
+.range-modern::-moz-range-progress { height: 12px; border-radius: 9999px; background: var(--acc); }
+.range-modern::-moz-range-thumb {
+  width: 24px; height: 24px; border-radius: 9999px; background: #fff; border: 2px solid var(--acc);
+  box-shadow: 0 2px 8px rgba(2,6,23,.15); transition: transform .15s ease;
+}
+.range-modern:active::-moz-range-thumb { transform: scale(1.05); }
