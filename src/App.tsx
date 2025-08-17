@@ -18,7 +18,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     radius: 'Search Radius',
     button: 'Get Random Recommendation',
     openInMaps: 'Open in Google Maps',
-    langToggle: '한글',
+    langToggle: 'KR',
     useMyLoc: 'Use my location',
     noResults: 'No results. Try a larger radius or different filters.',
     noMatch: 'No results matched your filters.',
