@@ -53,23 +53,16 @@ type CuisineKey = 'korean' | 'japanese' | 'chinese' | 'asian_other' | 'western';
 type CuisineItem = {
   key: CuisineKey;
   label: { en: string; ko: string };
-  keyword?: string;        // optional로 변경
-  type?: string;           // 추가: cuisine별 place type
+  keyword: string; // ← string으로 넓힘
 };
 
 const CUISINES: readonly CuisineItem[] = [
-  { key: 'korean', label: { en: 'Korean', ko: '한식' }, type: 'korean_restaurant' },
-  { key: 'japanese', label: { en: 'Japanese', ko: '일식' }, type: 'japanese_restaurant' },
-  { key: 'chinese', label: { en: 'Chinese', ko: '중식' }, type: 'chinese_restaurant' },
-  // 기타 아시안은 타입 랜덤(예: 태국/베트남/인도/인도네시아)
-  { key: 'asian_other', label: { en: 'Asian (Other)', ko: '아시안(기타)' } },
-  // 서양은 범주가 넓어서 아래에서 여러 타입 돌려서 합칠 거면 keyword 없이 처리
-  { key: 'western', label: { en: 'Western', ko: '양식' } },
+  { key: 'korean', label: { en: 'Korean', ko: '한식' }, keyword: 'Korean' },
+  { key: 'japanese', label: { en: 'Japanese', ko: '일식' }, keyword: 'Japanese' },
+  { key: 'chinese', label: { en: 'Chinese', ko: '중식' }, keyword: 'Chinese' },
+  { key: 'asian_other', label: { en: 'Asian (Other)', ko: '아시안(기타)' }, keyword: 'Asian' },
+  { key: 'western', label: { en: 'Western', ko: '양식' }, keyword: 'Western' },
 ] as const;
-
-const EXCLUDE_TYPES = ['bar', 'night_club'] as const;
-// 이름/주소에 뷔페류 키워드가 있으면 제외
-const EXCLUDE_NAME_RE = /(buffet|뷔페|all[-\s]?you[-\s]?can[-\s]?eat|무한리필)/i;
 
 
 const THEMES: Record<ThemeName, { mesh1: string; mesh2: string; acc: string; accText: string }> = {
@@ -96,6 +89,7 @@ function BackgroundDecor({
 }) {
   const col = `rgba(2,6,23,${opacity})`
 
+  // 패턴 스타일 스위치
   const patternStyle =
     variant === 'grid'
       ? {
@@ -212,29 +206,26 @@ function buildMapsUrl(place?: Result | null): string {
   const loc = place.geometry?.location && getLatLngLiteral(place.geometry.location)
 
   if (pid && name) {
+    // 권장 포맷: 앱 설치 시 앱으로, 없으면 웹으로 열림
     return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(name)}&query_place_id=${pid}`
   }
-  if (pid) {
-    return `https://www.google.com/maps/place/?q=place_id:${pid}`
-  }
-  if (name) {
-    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(name)}`
+  if (loc && name) {
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(name)}&query=${loc.lat},${loc.lng}`
   }
   if (loc) {
     return `https://www.google.com/maps/search/?api=1&query=${loc.lat},${loc.lng}`
   }
+  if (name) {
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(name)}`
+  }
   return '#'
 }
-
 
 export default function App() {
   const [lang, setLang] = useState<Lang>('ko')
   const t = I18N[lang]
 
-  const isMobile = useMemo(() => {
-    if (typeof navigator === 'undefined') return false; // SSR 가드
-    return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-  }, []);
+  const isMobile = useMemo(() => /Android|iPhone|iPad|iPod/i.test(navigator.userAgent), [])
 
   // 라이트 모드 디폴트
   const [isDark, setIsDark] = useState(() => {
@@ -320,121 +311,46 @@ export default function App() {
 
   const search = async () => {
     if (!mapRef.current) { setError(t.searchFail); return }
-    setError(null);
-    setIsLoading(true);
-
-    // 콜백 → Promise 헬퍼
-    const nearby = (service: google.maps.places.PlacesService, req: google.maps.places.PlaceSearchRequest) =>
-      new Promise<google.maps.places.PlaceResult[]>((resolve) => {
-        service.nearbySearch(req, (results, status) => {
-          if (status === google.maps.places.PlacesServiceStatus.OK && results) resolve(results);
-          else resolve([]);
-        });
-      });
-
+    setError(null); setIsLoading(true)
     try {
-      // 위치 결정 & 맵 센터 이동
-      const location = await geocode();
-      mapRef.current.setCenter(location);
+      const location = await geocode()
+      mapRef.current.setCenter(location)
 
-      // 기본 요청
-      const cuisine = CUISINES.find(c => c.key === cuisineKey)!;
-      const service = new google.maps.places.PlacesService(mapRef.current);
+      const cuisine = CUISINES.find(c => c.key === cuisineKey)!
+      const service = new google.maps.places.PlacesService(mapRef.current)
 
-      const baseReq: google.maps.places.PlaceSearchRequest = {
-        location,
-        radius,
-        openNow,
-      };
-
-      // 타입 결정
-      let multiTypes: string[] | null = null;
-
-      if (cuisine.type) {
-        // 예: 'korean_restaurant', 'japanese_restaurant', 'chinese_restaurant'
-        (baseReq as any).type = cuisine.type;
-      } else if (cuisineKey === 'asian_other') {
-        // 기타 아시안: 여러 타입 병합
-        multiTypes = [
-          'thai_restaurant',
-          'vietnamese_restaurant',
-          'indian_restaurant',
-          'ramen_restaurant',
-          'sushi_restaurant'
-        ];
-      } else if (cuisineKey === 'western') {
-        // 양식: 넓은 범주 → 여러 타입 병합
-        multiTypes = [
-          'american_restaurant',
-          'italian_restaurant',
-          'french_restaurant',
-          'seafood_restaurant',
-          'steak_house',
-          'pizza_restaurant',
-          'mediterranean_restaurant',
-          'spanish_restaurant',
-          'greek_restaurant'
-        ];
-      } else {
-        // 마지막 안전망
-        (baseReq as any).type = 'restaurant';
+      let keyword = cuisine.keyword
+      if (cuisineKey === "asian_other") {
+        // ✅ "아시안(기타)"일 경우 랜덤 키워드 뽑기
+        keyword = ASIAN_OTHER_KEYWORDS[Math.floor(Math.random() * ASIAN_OTHER_KEYWORDS.length)]
       }
 
-      // 호출 & 합치기
-      let results: google.maps.places.PlaceResult[] = [];
+      service.nearbySearch(
+        { location, radius, type: 'restaurant', keyword, openNow },
+        (results, status) => {
+          if (status !== google.maps.places.PlacesServiceStatus.OK || !results) {
+            setPicked(null); setError(t.noResults); setIsLoading(false); return
+          }
 
-      if (!multiTypes) {
-        results = await nearby(service, baseReq);
-      } else {
-        const lists = await Promise.all(
-          multiTypes.map(tp => nearby(service, { ...baseReq, type: tp as any }))
-        );
-        const uniq = new Map<string, google.maps.places.PlaceResult>();
-        lists.flat().forEach(p => { if (p.place_id) uniq.set(p.place_id, p); });
-        results = Array.from(uniq.values());
-      }
+          const filtered = results.filter(r =>
+            (r.rating ?? 0) >= minRating &&
+            (r.user_ratings_total ?? 0) >= minReviews
+          )
 
-      // 결과 없음
-      if (results.length === 0) {
-        setPicked(null);
-        setError(t.noResults);
-        return;
-      }
+          const pool = filtered.length ? filtered : results
+          const choice = pool.length ? pickRandom(pool) : null
 
-      // (선택) 정확 타입만 엄격히 남기기
-      if ((baseReq as any).type) {
-        const strictType = (baseReq as any).type as string;
-        results = results.filter(r => r.types?.includes(strictType as any));
-      }
-
-      // 1) bar/night_club 같은 타입 제외
-      results = results.filter(r => !r.types?.some(t => EXCLUDE_TYPES.includes(t as any)));
-
-      // 이름/주소에 '뷔페'류 키워드가 있으면 제외
-      results = results.filter(r => {
-        const name = r.name ?? '';
-        const addr = r.vicinity ?? r.formatted_address ?? '';
-        return !EXCLUDE_NAME_RE.test(name) && !EXCLUDE_NAME_RE.test(addr);
-      });
-
-      // 별점/리뷰수 필터
-      const filtered = results.filter(r =>
-        (r.rating ?? 0) >= minRating &&
-        (r.user_ratings_total ?? 0) >= minReviews
-      );
-
-      const pool = filtered.length ? filtered : results;
-      const choice = pool.length ? pickRandom(pool) : null;
-      setPicked(choice);
-      if (!choice) setError(t.noMatch);
-    } catch (e) {
-      setPicked(null);
-      setError(t.searchFail);
-    } finally {
-      setIsLoading(false);
+          setPicked(choice)
+          if (!choice) setError(t.noMatch)
+          setIsLoading(false)
+        }
+      )
+    } catch {
+      setError(t.searchFail); setIsLoading(false)
     }
-  };
+  }
 
+  // 👇 교체
   const placeUrl = useMemo(() => buildMapsUrl(picked), [picked])
   const pickedCenter = picked?.geometry?.location ? getLatLngLiteral(picked.geometry.location) : null
 
@@ -453,7 +369,7 @@ export default function App() {
       >
         {/* 전체 래퍼 (relative) */}
         <div className="w-full max-w-2xl relative">
-          {/* 로고 */}
+          {/* 로고 (그대로) */}
           <div className="absolute left-1/2 -translate-x-1/2 top-3 sm:top-3 md:top-4 z-20">
             <img
               src="/logo.svg"
@@ -463,7 +379,9 @@ export default function App() {
             />
           </div>
 
+          {/* 🔸변경 1: 바깥 래퍼에서 pt-* 제거 (이게 큰 띠 원인) */}
           <div className="p-[1px] rounded-[1.6rem] bg-[linear-gradient(135deg,var(--acc),rgba(0,0,0,0))] z-10 relative">
+            {/* 🔸변경 2: 안쪽 카드에 pt-* 추가 (로고 공간은 카드 안에서 확보) */}
             <div
               className={`rounded-[1.5rem] shadow-2xl backdrop-blur-sm border p-6 md:p-8 pt-16 sm:pt-20 md:pt-24 transition-colors duration-500
                 ${isDark ? "bg-[#232329] border-[#333642]" : "bg-white/80 border-[rgba(0,0,0,0.06)]"}`}
