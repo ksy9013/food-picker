@@ -380,10 +380,7 @@ export default function App() {
     if (cuisine.type) {
       (baseReq as any).type = cuisine.type; // 예: 'korean_restaurant'
     } else if (cuisineKey === 'asian_other') {
-      multiTypes = [
-        'thai_restaurant','vietnamese_restaurant','indian_restaurant','indonesian_restaurant',
-        'sushi_restaurant','ramen_restaurant'
-      ];
+      multiTypes = [...ASIAN_OTHER_TYPES];
     } else if (cuisineKey === 'western') {
       multiTypes = [
         'american_restaurant','italian_restaurant','french_restaurant','seafood_restaurant',
@@ -424,9 +421,15 @@ export default function App() {
       const hay = `${r.name ?? ''} ${r.vicinity ?? r.formatted_address ?? ''}`;
       return !EXCLUDE_NAME_RE.test(hay) && !EXCLUDE_FUSION_RE.test(hay);
     });
+    
+if (cuisineKey === 'korean') {
+  results = results.filter(r => {
+    const hay = `${r.name ?? ''} ${r.vicinity ?? r.formatted_address ?? ''}`;
+    return !NON_KOREAN_HINT_RE.test(hay);
+  });
+}
 
-    // ④ 2차 정밀 검증(한식일 때만): servesCuisine로 Korean 보장 + Fusion 컷
-    // ④ 2차 정밀 검증(한식일 때만): servesCuisine로 Korean 보장 + Fusion 컷 (대상 확대)
+// ④ 2차 정밀 검증(한식일 때만): servesCuisine로 Korean 보장 + Fusion 컷 (대상 확대)
 let refined = results;
 if (cuisineKey === 'korean' && results.length) {
   // '한식' 힌트 문자열
