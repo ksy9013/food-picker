@@ -199,9 +199,39 @@ function getLatLngLiteral(loc: google.maps.LatLng | google.maps.LatLngLiteral): 
   return loc as google.maps.LatLngLiteral
 }
 
+function buildMapsUrl(place?: Result | null): string {
+  if (!place) return '#'
+  const pid = place.place_id
+  const name = place.name?.trim()
+  const loc = place.geometry?.location && getLatLngLiteral(place.geometry.location)
+
+  // 1) place_id가 있으면 이게 제일 정확
+  if (pid && name) {
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(name)}&query_place_id=${pid}`
+  }
+  if (pid) {
+    return `https://www.google.com/maps/place/?q=place_id:${pid}`
+  }
+
+  // 2) place_id 없으면 이름 또는 좌표로 검색
+  if (name) {
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(name)}`
+  }
+  if (loc) {
+    return `https://www.google.com/maps/search/?api=1&query=${loc.lat},${loc.lng}`
+  }
+  return '#'
+}
+
+
 export default function App() {
   const [lang, setLang] = useState<Lang>('ko')
   const t = I18N[lang]
+
+const isMobile = useMemo(() => {
+  if (typeof navigator === 'undefined') return false; // SSR 가드
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}, []);
 
   // 라이트 모드 디폴트
   const [isDark, setIsDark] = useState(() => {
@@ -326,15 +356,14 @@ export default function App() {
     }
   }
 
-
-
-  const placeUrl = picked?.place_id ? `https://www.google.com/maps/place/?q=place_id:${picked.place_id}` : '#'
+  // 👇 교체
+  const placeUrl = useMemo(() => buildMapsUrl(picked), [picked])
   const pickedCenter = picked?.geometry?.location ? getLatLngLiteral(picked.geometry.location) : null
 
   return (
     <>
       <BackgroundDecor variant="cross" size={22} opacity={0.1} />
-{/* '' | 'cross' | 'hex' | ' | '  */}
+      {/* '' | 'cross' | 'hex' | ' | '  */}
       <div
         className="min-h-screen w-full text-slate-800 flex items-center justify-center p-6"
         style={{
@@ -622,8 +651,8 @@ export default function App() {
                       </p>
                       <a
                         href={placeUrl}
-                        target="_blank"
-                        rel="noreferrer"
+                        target={isMobile ? undefined : '_blank'}
+                        rel={isMobile ? undefined : 'noopener noreferrer'}
                         className="mt-4 inline-flex items-center justify-center rounded-full bg-[var(--acc)] px-4 py-2 text-white hover:brightness-95 shadow"
                       >
                         {t.openInMaps}
