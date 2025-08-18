@@ -67,9 +67,34 @@ const CUISINES: readonly CuisineItem[] = [
   { key: 'western', label: { en: 'Western', ko: '양식' } },
 ] as const;
 
+type Kw = readonly string[];
+
+const KW_FUSION: Kw = [
+  'fusion', '퓨전', 'pan asian', 'pan-asian', 'panasian', 'asian bistro', 'pan asian bistro'
+];
+
+const KW_BUFFET: Kw = [
+  'buffet', '뷔페', 'all you can eat', 'all-you-can-eat', '무한리필'
+];
+
+const KW_NON_KOREAN_HINT: Kw = [
+  'japanese','일식','일본','sushi','스시','ramen','라멘','udon','우동','izakaya','이자카야','yakitori','야키토리','tempura','덴푸라',
+  'chinese','중식','중국','dim sum','딤섬','szechuan','sichuan','사천','쓰촨','hot pot','훠궈',
+  'thai','타이','태국','pho','쌀국수','viet','vietnam','베트남',
+  'indian','인도','tandoor','naan','curry','카레'
+];
+
 const EXCLUDE_TYPES = ['bar', 'night_club'] as const;
-// 이름/주소에 뷔페류 키워드가 있으면 제외
-const EXCLUDE_NAME_RE = /(buffet|뷔페|all[-\s]?you[-\s]?can[-\s]?eat|무한리필)/i;
+
+function wordsToRegex(words: string[]): RegExp {
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const piece = (w: string) => esc(w).replace(/\\-/g,'[-\\s]*').replace(/\\\s+/g,'[-\\s]*');
+  return new RegExp(`(${words.map(piece).join('|')})`,'i');
+}
+
+const EXCLUDE_FUSION_RE = wordsToRegex([...KW_FUSION]);
+const EXCLUDE_NAME_RE   = wordsToRegex([...KW_BUFFET]);
+const NON_KOREAN_HINT_RE = wordsToRegex([...KW_NON_KOREAN_HINT]);
 
 
 const THEMES: Record<ThemeName, { mesh1: string; mesh2: string; acc: string; accText: string }> = {
@@ -316,116 +341,169 @@ export default function App() {
   ] as const;
 
   const search = async () => {
-    if (!mapRef.current) { setError(t.searchFail); return }
-    setError(null);
-    setIsLoading(true);
+  if (!mapRef.current) { setError(t.searchFail); return }
+  setError(null);
+  setIsLoading(true);
 
-    // 콜백 → Promise 헬퍼
-    const nearby = (service: google.maps.places.PlacesService, req: google.maps.places.PlaceSearchRequest) =>
-      new Promise<google.maps.places.PlaceResult[]>((resolve) => {
-        service.nearbySearch(req, (results, status) => {
-          if (status === google.maps.places.PlacesServiceStatus.OK && results) resolve(results);
-          else resolve([]);
-        });
+  // nearbySearch → Promise 헬퍼
+  const nearby = (service: google.maps.places.PlacesService, req: google.maps.places.PlaceSearchRequest) =>
+    new Promise<google.maps.places.PlaceResult[]>((resolve) => {
+      service.nearbySearch(req, (results, status) => {
+        if (status === google.maps.places.PlacesServiceStatus.OK && results) resolve(results);
+        else resolve([]);
       });
+    });
 
-    try {
-      // 위치 결정 & 맵 센터 이동
-      const location = await geocode();
-      mapRef.current.setCenter(location);
-
-      // 기본 요청
-      const cuisine = CUISINES.find(c => c.key === cuisineKey)!;
-      const service = new google.maps.places.PlacesService(mapRef.current);
-
-      const baseReq: google.maps.places.PlaceSearchRequest = {
-        location,
-        radius,
-        openNow,
-      };
-
-      // 타입 결정
-      let multiTypes: string[] | null = null;
-
-      if (cuisine.type) {
-        // 예: 'korean_restaurant', 'japanese_restaurant', 'chinese_restaurant'
-        (baseReq as any).type = cuisine.type;
-      } else if (cuisineKey === 'asian_other') {
-        // 기타 아시안: 여러 타입 병합
-        multiTypes = [...ASIAN_OTHER_TYPES];
-
-      } else if (cuisineKey === 'western') {
-        // 양식: 넓은 범주 → 여러 타입 병합
-        multiTypes = [
-          'american_restaurant',
-          'italian_restaurant',
-          'french_restaurant',
-          'seafood_restaurant',
-          'steak_house',
-          'pizza_restaurant',
-          'mediterranean_restaurant',
-          'spanish_restaurant',
-          'greek_restaurant'
-        ];
-      } else {
-        // 마지막 안전망
-        (baseReq as any).type = 'restaurant';
-      }
-
-      // 호출 & 합치기
-      let results: google.maps.places.PlaceResult[] = [];
-
-      if (!multiTypes) {
-        results = await nearby(service, baseReq);
-      } else {
-        const lists = await Promise.all(
-          multiTypes.map(tp => nearby(service, { ...baseReq, type: tp as any }))
-        );
-        const uniq = new Map<string, google.maps.places.PlaceResult>();
-        lists.flat().forEach(p => { if (p.place_id) uniq.set(p.place_id, p); });
-        results = Array.from(uniq.values());
-      }
-
-      // 결과 없음
-      if (results.length === 0) {
-        setPicked(null);
-        setError(t.noResults);
-        return;
-      }
-
-      // (선택) 정확 타입만 엄격히 남기기
-      if ((baseReq as any).type) {
-        const strictType = (baseReq as any).type as string;
-        results = results.filter(r => r.types?.includes(strictType as any));
-      }
-
-      // 1) bar/night_club 같은 타입 제외
-      results = results.filter(r => !r.types?.some(t => EXCLUDE_TYPES.includes(t as any)));
-
-      // 이름/주소에 '뷔페'류 키워드가 있으면 제외
-      results = results.filter(r => {
-        const name = r.name ?? '';
-        const addr = r.vicinity ?? r.formatted_address ?? '';
-        return !EXCLUDE_NAME_RE.test(name) && !EXCLUDE_NAME_RE.test(addr);
-      });
-
-      // 별점/리뷰수 필터
-      const filtered = results.filter(r =>
-        (r.rating ?? 0) >= minRating &&
-        (r.user_ratings_total ?? 0) >= minReviews
+  // getDetails → Promise 헬퍼 (필드 최소화)
+  const getDetails = (service: google.maps.places.PlacesService, placeId: string) =>
+    new Promise<google.maps.places.PlaceResult | null>((resolve) => {
+      service.getDetails(
+        {
+          placeId,
+          // TS에서 필드 리터럴 union이라 any 캐스팅
+          fields: ['place_id','name','types','servesCuisine','vicinity','formatted_address'] as any
+        },
+        (res, status) => resolve(status === google.maps.places.PlacesServiceStatus.OK && res ? res : null)
       );
+    });
 
-      const pool = filtered.length ? filtered : results;
-      const choice = pool.length ? pickRandom(pool) : null;
-      setPicked(choice);
-      if (!choice) setError(t.noMatch);
-    } catch (e) {
-      setPicked(null);
-      setError(t.searchFail);
-    } finally {
-      setIsLoading(false);
+  try {
+    const location = await geocode();
+    mapRef.current.setCenter(location);
+
+    const cuisine = CUISINES.find(c => c.key === cuisineKey)!;
+    const service = new google.maps.places.PlacesService(mapRef.current);
+
+    const baseReq: google.maps.places.PlaceSearchRequest = { location, radius, openNow };
+    let multiTypes: string[] | null = null;
+
+    if (cuisine.type) {
+      (baseReq as any).type = cuisine.type; // 예: 'korean_restaurant'
+    } else if (cuisineKey === 'asian_other') {
+      multiTypes = [
+        'thai_restaurant','vietnamese_restaurant','indian_restaurant','indonesian_restaurant',
+        'sushi_restaurant','ramen_restaurant'
+      ];
+    } else if (cuisineKey === 'western') {
+      multiTypes = [
+        'american_restaurant','italian_restaurant','french_restaurant','seafood_restaurant',
+        'steak_house','pizza_restaurant','mediterranean_restaurant','spanish_restaurant','greek_restaurant'
+      ];
+    } else {
+      (baseReq as any).type = 'restaurant';
     }
-  };
+
+    // ① 검색
+    let results: google.maps.places.PlaceResult[] = [];
+    if (!multiTypes) {
+      results = await nearby(service, baseReq);
+    } else {
+      const lists = await Promise.all(
+        multiTypes.map(tp => nearby(service, { ...baseReq, type: tp as any }))
+      );
+      const uniq = new Map<string, google.maps.places.PlaceResult>();
+      lists.flat().forEach(p => { if (p.place_id) uniq.set(p.place_id, p); });
+      results = Array.from(uniq.values());
+    }
+
+    if (results.length === 0) {
+      setPicked(null);
+      setError(t.noResults);
+      return;
+    }
+
+    // ② (선택) 정확 타입만 엄격히 남기기
+    if ((baseReq as any).type) {
+      const strictType = (baseReq as any).type as string;
+      results = results.filter(r => r.types?.includes(strictType as any));
+    }
+
+    // ③ 1차 오염 제거: 바/뷔페/퓨전(이름·주소) 컷
+    results = results.filter(r => !r.types?.some(t => EXCLUDE_TYPES.includes(t as any)));
+    results = results.filter(r => {
+      const hay = `${r.name ?? ''} ${r.vicinity ?? r.formatted_address ?? ''}`;
+      return !EXCLUDE_NAME_RE.test(hay) && !EXCLUDE_FUSION_RE.test(hay);
+    });
+
+    // ④ 2차 정밀 검증(한식일 때만): servesCuisine로 Korean 보장 + Fusion 컷
+    // ④ 2차 정밀 검증(한식일 때만): servesCuisine로 Korean 보장 + Fusion 컷 (대상 확대)
+let refined = results;
+if (cuisineKey === 'korean' && results.length) {
+  // '한식' 힌트 문자열
+  const isKoreanHint = (s: string) => /(korean|한식|bbq|삼겹|갈비|비빔밥|순두부)/i.test(s);
+
+  // ✅ Details 조회 "대상"을 넓힘:
+  // - korean_restaurant 타입이거나
+  // - 이름/주소에 한식 힌트가 있는 모든 후보
+  const candAll = results.filter(r => {
+    const hay = `${r.name ?? ''} ${r.vicinity ?? r.formatted_address ?? ''}`;
+    return (r.types?.includes('korean_restaurant') || isKoreanHint(hay));
+  });
+
+  // 너무 많으면 상한(50) 두기 (리뷰 수 순 정렬)
+  const cand = candAll
+    .sort((a,b) => (b.user_ratings_total ?? 0) - (a.user_ratings_total ?? 0))
+    .slice(0, 50);
+
+  // Details 조회
+  const detailList = await Promise.all(
+    cand.map(p => p.place_id ? getDetails(service, p.place_id) : Promise.resolve(null))
+  );
+
+  // Details 기반 판정
+  const okIds = new Set<string>();
+  for (const d of detailList) {
+    if (!d?.place_id) continue;
+
+    const cuisines: string[] | undefined = (d as any)?.servesCuisine;
+    if (cuisines && cuisines.length) {
+      const hasKorean = cuisines.some(c => /korean/i.test(c));
+      const hasFusion = cuisines.some(c => /(fusion|pan[-\s]?asian)/i.test(c));
+      if (hasKorean && !hasFusion) okIds.add(d.place_id);
+      continue;
+    }
+
+    // servesCuisine 없으면 이름/주소 + 타입으로 보수적 판단
+    const hay = `${d?.name ?? ''} ${d?.vicinity ?? d?.formatted_address ?? ''}`;
+    const looksFusion = EXCLUDE_FUSION_RE.test(hay);
+    const likelyKorean = isKoreanHint(hay) || (d?.types ?? []).includes('korean_restaurant');
+    if (!looksFusion && likelyKorean) okIds.add(d.place_id);
+  }
+
+  // Details 통과 우선 적용
+  let after = results.filter(r => r.place_id && okIds.has(r.place_id));
+
+  // 너무 줄면 안전 fallback: 여전히 fusion 텍스트 컷 + korean_restaurant 타입만
+  if (after.length < Math.min(3, results.length)) {
+    after = results.filter(r => {
+      const hay = `${r.name ?? ''} ${r.vicinity ?? r.formatted_address ?? ''}`;
+      return !EXCLUDE_FUSION_RE.test(hay) && r.types?.includes('korean_restaurant');
+    });
+  }
+
+  if (after.length) refined = after;
+}
+
+
+    // ⑤ 별점/리뷰수 필터
+    const filtered = refined.filter(r =>
+      (r.rating ?? 0) >= minRating &&
+      (r.user_ratings_total ?? 0) >= minReviews
+    );
+
+    const pool = filtered.length ? filtered : refined;
+    const choice = pool.length ? pickRandom(pool) : null;
+
+    setPicked(choice);
+    if (!choice) setError(t.noMatch);
+  } catch (e) {
+    setPicked(null);
+    setError(t.searchFail);
+  } finally {
+    setIsLoading(false);
+  }
+};
+
 
   const placeUrl = useMemo(() => buildMapsUrl(picked), [picked])
   const pickedCenter = picked?.geometry?.location ? getLatLngLiteral(picked.geometry.location) : null
