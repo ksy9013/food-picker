@@ -306,16 +306,14 @@ export default function App() {
 
   const pickRandom = (items: Result[]) => items[Math.floor(Math.random() * items.length)]
 
-  const ASIAN_OTHER_KEYWORDS = [
-    "Thai",
-    "Vietnamese",
-    "Indian",
-    "Malaysian",
-    "Indonesian",
-    "Filipino",
-    "Singaporean",
-    "Nepalese"
-  ]
+  const ASIAN_OTHER_TYPES = [
+    'thai_restaurant',
+    'vietnamese_restaurant',
+    'indian_restaurant',
+    'indonesian_restaurant',
+    'sushi_restaurant',
+    'ramen_restaurant',
+  ] as const;
 
   const search = async () => {
     if (!mapRef.current) { setError(t.searchFail); return }
@@ -354,13 +352,8 @@ export default function App() {
         (baseReq as any).type = cuisine.type;
       } else if (cuisineKey === 'asian_other') {
         // 기타 아시안: 여러 타입 병합
-        multiTypes = [
-          'thai_restaurant',
-          'vietnamese_restaurant',
-          'indian_restaurant',
-          'ramen_restaurant',
-          'sushi_restaurant'
-        ];
+        multiTypes = [...ASIAN_OTHER_TYPES];
+
       } else if (cuisineKey === 'western') {
         // 양식: 넓은 범주 → 여러 타입 병합
         multiTypes = [
