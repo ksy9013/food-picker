@@ -67,6 +67,9 @@ const CUISINES: readonly CuisineItem[] = [
   { key: 'western', label: { en: 'Western', ko: '양식' } },
 ] as const;
 
+const EXCLUDE_TYPES = ['bar', 'night_club'] as const;
+// 이름/주소에 뷔페류 키워드가 있으면 제외
+const EXCLUDE_NAME_RE = /(buffet|뷔페|all[-\s]?you[-\s]?can[-\s]?eat|무한리필)/i;
 
 
 const THEMES: Record<ThemeName, { mesh1: string; mesh2: string; acc: string; accText: string }> = {
@@ -92,8 +95,6 @@ function BackgroundDecor({
   opacity?: number
 }) {
   const col = `rgba(2,6,23,${opacity})`
-
-  // 패턴 스타일 스위치
   const patternStyle =
     variant === 'grid'
       ? {
@@ -209,15 +210,12 @@ function buildMapsUrl(place?: Result | null): string {
   const name = place.name?.trim()
   const loc = place.geometry?.location && getLatLngLiteral(place.geometry.location)
 
-  // 1) place_id가 있으면 이게 제일 정확
   if (pid && name) {
     return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(name)}&query_place_id=${pid}`
   }
   if (pid) {
     return `https://www.google.com/maps/place/?q=place_id:${pid}`
   }
-
-  // 2) place_id 없으면 이름 또는 좌표로 검색
   if (name) {
     return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(name)}`
   }
@@ -346,7 +344,6 @@ export default function App() {
         location,
         radius,
         openNow,
-        // ❌ keyword는 쓰지 않는다(오탐↑). 필요시 마지막 안전망에서만 고려.
       };
 
       // 타입 결정
@@ -361,7 +358,6 @@ export default function App() {
           'thai_restaurant',
           'vietnamese_restaurant',
           'indian_restaurant',
-          // 아래는 환경에 따라 미지원일 수 있어 캐스팅 처리됨
           'ramen_restaurant',
           'sushi_restaurant'
         ];
@@ -410,6 +406,16 @@ export default function App() {
         results = results.filter(r => r.types?.includes(strictType as any));
       }
 
+      // 1) bar/night_club 같은 타입 제외
+      results = results.filter(r => !r.types?.some(t => EXCLUDE_TYPES.includes(t as any)));
+
+      // 이름/주소에 '뷔페'류 키워드가 있으면 제외
+      results = results.filter(r => {
+        const name = r.name ?? '';
+        const addr = r.vicinity ?? r.formatted_address ?? '';
+        return !EXCLUDE_NAME_RE.test(name) && !EXCLUDE_NAME_RE.test(addr);
+      });
+
       // 별점/리뷰수 필터
       const filtered = results.filter(r =>
         (r.rating ?? 0) >= minRating &&
@@ -417,8 +423,7 @@ export default function App() {
       );
 
       const pool = filtered.length ? filtered : results;
-      const choice = pool.length ? pool[Math.floor(Math.random() * pool.length)] : null;
-
+      const choice = pool.length ? pickRandom(pool) : null;
       setPicked(choice);
       if (!choice) setError(t.noMatch);
     } catch (e) {
@@ -447,7 +452,7 @@ export default function App() {
       >
         {/* 전체 래퍼 (relative) */}
         <div className="w-full max-w-2xl relative">
-          {/* 로고 (그대로) */}
+          {/* 로고 */}
           <div className="absolute left-1/2 -translate-x-1/2 top-3 sm:top-3 md:top-4 z-20">
             <img
               src="/logo.svg"
@@ -457,9 +462,7 @@ export default function App() {
             />
           </div>
 
-          {/* 🔸변경 1: 바깥 래퍼에서 pt-* 제거 (이게 큰 띠 원인) */}
           <div className="p-[1px] rounded-[1.6rem] bg-[linear-gradient(135deg,var(--acc),rgba(0,0,0,0))] z-10 relative">
-            {/* 🔸변경 2: 안쪽 카드에 pt-* 추가 (로고 공간은 카드 안에서 확보) */}
             <div
               className={`rounded-[1.5rem] shadow-2xl backdrop-blur-sm border p-6 md:p-8 pt-16 sm:pt-20 md:pt-24 transition-colors duration-500
                 ${isDark ? "bg-[#232329] border-[#333642]" : "bg-white/80 border-[rgba(0,0,0,0.06)]"}`}
