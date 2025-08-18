@@ -1,6 +1,7 @@
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { GoogleMap, LoadScript, MarkerF } from '@react-google-maps/api'
 import { MapPin, Shuffle, Sparkles, Star } from 'lucide-react'
-import { useCallback, useMemo, useRef, useState, useEffect } from 'react'
+import { useEffect } from 'react'
 
 type Result = google.maps.places.PlaceResult
 type Lang = 'en' | 'ko'
@@ -66,50 +67,10 @@ const CUISINES: readonly CuisineItem[] = [
   { key: 'western', label: { en: 'Western', ko: '양식' } },
 ] as const;
 
-type Kw = readonly string[];
-
-const KW_FUSION: Kw = [
-  'fusion', '퓨전', 'pan asian', 'pan-asian', 'panasian', 'asian bistro', 'pan asian bistro'
-];
-
-const KW_BUFFET: Kw = [
-  'buffet', '뷔페', 'all you can eat', 'all-you-can-eat', '무한리필'
-];
-
-const KW_NON_KOREAN_HINT: Kw = [
-  'japanese', '일식', '일본', 'sushi', '스시', 'ramen', '라멘', 'udon', '우동', 'izakaya', '이자카야', 'yakitori', '야키토리', 'tempura', '덴푸라',
-  'chinese', '중식', '중국', 'dim sum', '딤섬', 'szechuan', 'sichuan', '사천', '쓰촨', 'hot pot', '훠궈',
-  'thai', '타이', '태국', 'pho', '쌀국수', 'viet', 'vietnam', '베트남',
-  'indian', '인도', 'tandoor', 'naan', 'curry', '카레'
-];
-
 const EXCLUDE_TYPES = ['bar', 'night_club'] as const;
+// 이름/주소에 뷔페류 키워드가 있으면 제외
+const EXCLUDE_NAME_RE = /(buffet|뷔페|all[-\s]?you[-\s]?can[-\s]?eat|무한리필)/i;
 
-function wordsToRegex(words: string[]): RegExp {
-  // 안전하게 이스케이프 + 공백/하이픈만 유연 매칭
-  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const alt = words
-    .map(w => w.trim())
-    .filter(Boolean)
-    .map(w =>
-      esc(w)
-        .replace(/\s+/g, '\\s+')     // 하나 이상의 공백을 허용
-        .replace(/-/g, '[-\\s]?')    // 하이픈을 하이픈/공백 1칸으로 유연화
-    )
-    .join('|');
-
-  try {
-    return new RegExp(`(?:${alt})`, 'i');
-  } catch {
-    // 혹시라도 실패하면 "아무 것도 매칭 안 되는" 안전한 정규식 반환
-    return /$a/;
-  }
-}
-
-
-const EXCLUDE_FUSION_RE = wordsToRegex([...KW_FUSION]);
-const EXCLUDE_NAME_RE = wordsToRegex([...KW_BUFFET]);
-const NON_KOREAN_HINT_RE = wordsToRegex([...KW_NON_KOREAN_HINT]);
 
 const THEMES: Record<ThemeName, { mesh1: string; mesh2: string; acc: string; accText: string }> = {
   pastel: { mesh1: 'rgba(255,182,193,0.25)', mesh2: 'rgba(173,216,230,0.25)', acc: '#ff90b3', accText: '#d72660' },
@@ -134,6 +95,7 @@ function BackgroundDecor({
   opacity?: number
 }) {
   const col = `rgba(2,6,23,${opacity})`
+
   const patternStyle =
     variant === 'grid'
       ? {
@@ -237,30 +199,6 @@ function StarRating({ value, onChange }: { value: number; onChange: (v: number) 
   )
 }
 
-function formatForInput(result: google.maps.GeocoderResult): string {
-  const get = (type: string, short = false) =>
-    result.address_components?.find(c => c.types.includes(type))?.[short ? 'short_name' : 'long_name'];
-
-  const zip = get('postal_code');
-  const city = get('locality') || get('sublocality') || get('administrative_area_level_2');
-  const state = get('administrative_area_level_1', true); // TX, CA 같은 약어
-  if (zip) return zip;
-  if (city && state) return `${city}, ${state}`;
-  // 백업: 첫 두 토큰만 (너무 길어지는 것 방지)
-  const parts = (result.formatted_address || '').split(',');
-  return parts.slice(0, 2).join(',').trim() || `${result.geometry.location?.lat()},${result.geometry.location?.lng()}`;
-}
-
-async function reverseGeocodeToInput(ll: google.maps.LatLngLiteral): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const geocoder = new google.maps.Geocoder();
-    geocoder.geocode({ location: ll }, (res, status) => {
-      if (status === 'OK' && res && res[0]) resolve(formatForInput(res[0]));
-      else reject(new Error(status));
-    });
-  });
-}
-
 function getLatLngLiteral(loc: google.maps.LatLng | google.maps.LatLngLiteral): google.maps.LatLngLiteral {
   // @ts-ignore
   if (typeof loc.lat === 'function') return { lat: (loc as google.maps.LatLng).lat(), lng: (loc as google.maps.LatLng).lng() }
@@ -324,7 +262,6 @@ export default function App() {
   const [minReviews, setMinReviews] = useState(50)
   const [openNow, setOpenNow] = useState(false)
   const [radius, setRadius] = useState(8000)
-  const [locLoading, setLocLoading] = useState(false);
 
   const [picked, setPicked] = useState<Result | null>(null)
   const [isLoading, setIsLoading] = useState(false)
@@ -345,26 +282,13 @@ export default function App() {
   const marksMeters = useMemo(() => (lang === 'en' ? [1, 3, 5, 8, 12].map(mi => mi * 1609) : [1, 3, 5, 10, 20].map(km => km * 1000)), [lang])
 
   const useMyLocation = () => {
-    setError(null);
-    if (!navigator.geolocation) { setError('Geolocation is not supported.'); return; }
-    setLocLoading(true);
+    setError(null)
+    if (!navigator.geolocation) { setError('Geolocation is not supported.'); return }
     navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        const ll = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-        setGeo(ll);
-        try {
-          const text = await reverseGeocodeToInput(ll);
-          setZipOrCity(text); // ← 검색창에 자동 채우기!
-        } catch {
-          // 리버스 실패해도 지도는 센터 잡혔으니 무시
-        } finally {
-          setLocLoading(false);
-        }
-      },
-      () => { setError('Failed to get current location.'); setLocLoading(false); }
-    );
-  };
-
+      (pos) => setGeo({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      () => setError('Failed to get current location.')
+    )
+  }
 
   const geocode = async (): Promise<google.maps.LatLngLiteral> => {
     if (geo) return geo
@@ -381,152 +305,135 @@ export default function App() {
     return loc
   }
 
-  const ASIAN_OTHER_TYPES = [
-    'thai_restaurant',
-    'vietnamese_restaurant',
-    'indian_restaurant',
-    'indonesian_restaurant',
-    'sushi_restaurant',
-    'ramen_restaurant',
-  ] as const;
+  const pickRandom = (items: Result[]) => items[Math.floor(Math.random() * items.length)]
 
-const search = async () => {
-  if (!mapRef.current) { setError(t.searchFail); return }
-  setError(null);
-  setIsLoading(true);
+  const ASIAN_OTHER_KEYWORDS = [
+    "Thai",
+    "Vietnamese",
+    "Indian",
+    "Malaysian",
+    "Indonesian",
+    "Filipino",
+    "Singaporean",
+    "Nepalese"
+  ]
 
-  // nearbySearch → Promise 헬퍼
-  const nearby = (service: google.maps.places.PlacesService, req: google.maps.places.PlaceSearchRequest) =>
-    new Promise<google.maps.places.PlaceResult[]>((resolve) => {
-      service.nearbySearch(req, (results, status) => {
-        if (status === google.maps.places.PlacesServiceStatus.OK && results) resolve(results);
-        else resolve([]);
+  const search = async () => {
+    if (!mapRef.current) { setError(t.searchFail); return }
+    setError(null);
+    setIsLoading(true);
+
+    // 콜백 → Promise 헬퍼
+    const nearby = (service: google.maps.places.PlacesService, req: google.maps.places.PlaceSearchRequest) =>
+      new Promise<google.maps.places.PlaceResult[]>((resolve) => {
+        service.nearbySearch(req, (results, status) => {
+          if (status === google.maps.places.PlacesServiceStatus.OK && results) resolve(results);
+          else resolve([]);
+        });
       });
-    });
 
-  // 여러 type을 돌려서 모으기(중복 제거)
-  const byTypes = async (
-    service: google.maps.places.PlacesService,
-    base: google.maps.places.PlaceSearchRequest,
-    types: string[]
-  ) => {
-    const uniq = new Map<string, google.maps.places.PlaceResult>();
-    for (const tp of types) {
-      const list = await nearby(service, { ...base, type: tp as any });
-      list.forEach(p => { if (p.place_id) uniq.set(p.place_id, p); });
-    }
-    return Array.from(uniq.values());
-  };
+    try {
+      // 위치 결정 & 맵 센터 이동
+      const location = await geocode();
+      mapRef.current.setCenter(location);
 
-  try {
-    const location = await geocode();
-    mapRef.current.setCenter(location);
+      // 기본 요청
+      const cuisine = CUISINES.find(c => c.key === cuisineKey)!;
+      const service = new google.maps.places.PlacesService(mapRef.current);
 
-    const service = new google.maps.places.PlacesService(mapRef.current);
+      const baseReq: google.maps.places.PlaceSearchRequest = {
+        location,
+        radius,
+        openNow,
+      };
 
-    // 0) 공통 검색 파라미터
-    const baseReq: google.maps.places.PlaceSearchRequest = { location, radius, openNow };
+      // 타입 결정
+      let multiTypes: string[] | null = null;
 
-    // 1) cuisine별 1차 type 후보 + 2차 keyword 폴백
-    let typeCandidates: string[] = [];
-    let keywordFallbacks: string[] = [];
-
-    if (cuisineKey === 'korean') {
-      typeCandidates = ['korean_restaurant'];
-      keywordFallbacks = ['korean', 'korean bbq', '한식'];
-    } else if (cuisineKey === 'japanese') {
-      typeCandidates = ['japanese_restaurant', 'sushi_restaurant', 'ramen_restaurant'];
-      keywordFallbacks = ['japanese', 'sushi', 'ramen', '일식', '스시', '라멘'];
-    } else if (cuisineKey === 'chinese') {
-      typeCandidates = ['chinese_restaurant'];
-      keywordFallbacks = ['chinese', 'dim sum', 'szechuan', 'sichuan', '중식', '딤섬'];
-    } else if (cuisineKey === 'asian_other') {
-      typeCandidates = [...ASIAN_OTHER_TYPES]; // 태국/베트남/인도/인니/스시/라멘
-      keywordFallbacks = ['thai', 'vietnamese', 'indian', 'indonesian'];
-    } else if (cuisineKey === 'western') {
-      typeCandidates = [
-        'american_restaurant','italian_restaurant','french_restaurant','seafood_restaurant',
-        'steakhouse','pizza_restaurant','mediterranean_restaurant','spanish_restaurant','greek_restaurant'
-      ];
-      keywordFallbacks = ['american','italian','seafood','steak','pizza','mediterranean','spanish','greek'];
-    } else {
-      // 혹시나
-      typeCandidates = ['restaurant'];
-    }
-
-    // 2) 1차: type들로 시도
-    let results: google.maps.places.PlaceResult[] = [];
-    if (typeCandidates.length === 1) {
-      // 단일 타입이면 한 번만
-      results = await nearby(service, { ...baseReq, type: typeCandidates[0] as any });
-    } else {
-      // 여러 타입이면 합치기
-      results = await byTypes(service, baseReq, typeCandidates);
-    }
-
-    // 3) 2차: 완전 0건이면 → restaurant + keyword 폴백(첫 성공 지점에서 멈춤)
-    if (results.length === 0 && keywordFallbacks.length) {
-      for (const kw of keywordFallbacks) {
-        const list = await nearby(service, { ...baseReq, type: 'restaurant', keyword: kw });
-        if (list.length) { results = list; break; }
+      if (cuisine.type) {
+        // 예: 'korean_restaurant', 'japanese_restaurant', 'chinese_restaurant'
+        (baseReq as any).type = cuisine.type;
+      } else if (cuisineKey === 'asian_other') {
+        // 기타 아시안: 여러 타입 병합
+        multiTypes = [
+          'thai_restaurant',
+          'vietnamese_restaurant',
+          'indian_restaurant',
+          'ramen_restaurant',
+          'sushi_restaurant'
+        ];
+      } else if (cuisineKey === 'western') {
+        // 양식: 넓은 범주 → 여러 타입 병합
+        multiTypes = [
+          'american_restaurant',
+          'italian_restaurant',
+          'french_restaurant',
+          'seafood_restaurant',
+          'steak_house',
+          'pizza_restaurant',
+          'mediterranean_restaurant',
+          'spanish_restaurant',
+          'greek_restaurant'
+        ];
+      } else {
+        // 마지막 안전망
+        (baseReq as any).type = 'restaurant';
       }
-    }
 
-    if (results.length === 0) {
-      setPicked(null);
-      setError(t.noResults);
-      return;
-    }
+      // 호출 & 합치기
+      let results: google.maps.places.PlaceResult[] = [];
 
-    // 4) 전역 제외: bar/night_club + buffet + fusion 텍스트 컷
-    results = results.filter(r => !r.types?.some(t => EXCLUDE_TYPES.includes(t as any)));
-    results = results.filter(r => {
-      const hay = `${r.name ?? ''} ${r.vicinity ?? r.formatted_address ?? ''}`;
-      return !EXCLUDE_NAME_RE.test(hay) && !EXCLUDE_FUSION_RE.test(hay);
-    });
+      if (!multiTypes) {
+        results = await nearby(service, baseReq);
+      } else {
+        const lists = await Promise.all(
+          multiTypes.map(tp => nearby(service, { ...baseReq, type: tp as any }))
+        );
+        const uniq = new Map<string, google.maps.places.PlaceResult>();
+        lists.flat().forEach(p => { if (p.place_id) uniq.set(p.place_id, p); });
+        results = Array.from(uniq.values());
+      }
 
-    // 한식 선택 시 비(非)한식 힌트 컷(스시/라멘/딤섬 등)
-    if (cuisineKey === 'korean') {
+      // 결과 없음
+      if (results.length === 0) {
+        setPicked(null);
+        setError(t.noResults);
+        return;
+      }
+
+      // (선택) 정확 타입만 엄격히 남기기
+      if ((baseReq as any).type) {
+        const strictType = (baseReq as any).type as string;
+        results = results.filter(r => r.types?.includes(strictType as any));
+      }
+
+      // 1) bar/night_club 같은 타입 제외
+      results = results.filter(r => !r.types?.some(t => EXCLUDE_TYPES.includes(t as any)));
+
+      // 이름/주소에 '뷔페'류 키워드가 있으면 제외
       results = results.filter(r => {
-        const hay = `${r.name ?? ''} ${r.vicinity ?? r.formatted_address ?? ''}`;
-        return !NON_KOREAN_HINT_RE.test(hay);
+        const name = r.name ?? '';
+        const addr = r.vicinity ?? r.formatted_address ?? '';
+        return !EXCLUDE_NAME_RE.test(name) && !EXCLUDE_NAME_RE.test(addr);
       });
-    }
 
-    if (results.length === 0) {
-      setPicked(null);
-      setError(t.noResults);
-      return;
-    }
-
-    // 5) 별점/리뷰수 단계적 완화
-    const steps = [
-      { r: minRating, n: minReviews },
-      { r: Math.max(3.5, minRating - 0.5), n: Math.min(20, minReviews) },
-      { r: 0, n: 0 },
-    ];
-    let pool: Result[] = [];
-    for (const s of steps) {
-      pool = results.filter(x =>
-        (x.rating ?? 0) >= s.r &&
-        (x.user_ratings_total ?? 0) >= s.n
+      // 별점/리뷰수 필터
+      const filtered = results.filter(r =>
+        (r.rating ?? 0) >= minRating &&
+        (r.user_ratings_total ?? 0) >= minReviews
       );
-      if (pool.length) break;
+
+      const pool = filtered.length ? filtered : results;
+      const choice = pool.length ? pickRandom(pool) : null;
+      setPicked(choice);
+      if (!choice) setError(t.noMatch);
+    } catch (e) {
+      setPicked(null);
+      setError(t.searchFail);
+    } finally {
+      setIsLoading(false);
     }
-    if (!pool.length) pool = results;
-
-    const choice = pool[Math.floor(Math.random() * pool.length)] ?? null;
-    setPicked(choice);
-    if (!choice) setError(t.noMatch);
-  } catch (e) {
-    setPicked(null);
-    setError(t.searchFail);
-  } finally {
-    setIsLoading(false);
-  }
-};
-
-
+  };
 
   const placeUrl = useMemo(() => buildMapsUrl(picked), [picked])
   const pickedCenter = picked?.geometry?.location ? getLatLngLiteral(picked.geometry.location) : null
@@ -627,12 +534,10 @@ const search = async () => {
                 <button
                   type="button"
                   onClick={useMyLocation}
-                  disabled={locLoading}
-                  className="shrink-0 rounded-xl border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50 active:scale-95 transition disabled:opacity-60"
+                  className="shrink-0 rounded-xl border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50 active:scale-95 transition"
                 >
-                  {locLoading ? (lang === 'en' ? 'Getting…' : '가져오는 중…') : t.useMyLoc}
+                  {t.useMyLoc}
                 </button>
-
               </div>
 
               {/* Cuisines */}
