@@ -87,10 +87,26 @@ const KW_NON_KOREAN_HINT: Kw = [
 const EXCLUDE_TYPES = ['bar', 'night_club'] as const;
 
 function wordsToRegex(words: string[]): RegExp {
+  // 안전하게 이스케이프 + 공백/하이픈만 유연 매칭
   const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const piece = (w: string) => esc(w).replace(/\\-/g, '[-\\s]*').replace(/\\\s+/g, '[-\\s]*');
-  return new RegExp(`(${words.map(piece).join('|')})`, 'i');
+  const alt = words
+    .map(w => w.trim())
+    .filter(Boolean)
+    .map(w =>
+      esc(w)
+        .replace(/\s+/g, '\\s+')     // 하나 이상의 공백을 허용
+        .replace(/-/g, '[-\\s]?')    // 하이픈을 하이픈/공백 1칸으로 유연화
+    )
+    .join('|');
+
+  try {
+    return new RegExp(`(?:${alt})`, 'i');
+  } catch {
+    // 혹시라도 실패하면 "아무 것도 매칭 안 되는" 안전한 정규식 반환
+    return /$a/;
+  }
 }
+
 
 const EXCLUDE_FUSION_RE = wordsToRegex([...KW_FUSION]);
 const EXCLUDE_NAME_RE = wordsToRegex([...KW_BUFFET]);
@@ -390,6 +406,13 @@ export default function App() {
           else resolve([]);
         });
       });
+    // LoadScript가 아직 안 끝났으면 안전하게 중단
+    // (화면이 아예 죽지 않게 방어)
+    if (!(window as any).google?.maps?.places) {
+      setIsLoading(false);
+      setError(t.mapsFail);
+      return;
+    }
 
     // getDetails → Promise 헬퍼 (필드 최소화)
     const getDetails = (service: google.maps.places.PlacesService, placeId: string) =>
