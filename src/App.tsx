@@ -1,7 +1,6 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
 import { GoogleMap, LoadScript, MarkerF } from '@react-google-maps/api'
 import { MapPin, Shuffle, Sparkles, Star } from 'lucide-react'
-import { useEffect } from 'react'
+import { useCallback, useMemo, useRef, useState, useEffect } from 'react'
 
 type Result = google.maps.places.PlaceResult
 type Lang = 'en' | 'ko'
@@ -111,7 +110,6 @@ function wordsToRegex(words: string[]): RegExp {
 const EXCLUDE_FUSION_RE = wordsToRegex([...KW_FUSION]);
 const EXCLUDE_NAME_RE = wordsToRegex([...KW_BUFFET]);
 const NON_KOREAN_HINT_RE = wordsToRegex([...KW_NON_KOREAN_HINT]);
-const [locLoading, setLocLoading] = useState(false);
 
 const THEMES: Record<ThemeName, { mesh1: string; mesh2: string; acc: string; accText: string }> = {
   pastel: { mesh1: 'rgba(255,182,193,0.25)', mesh2: 'rgba(173,216,230,0.25)', acc: '#ff90b3', accText: '#d72660' },
