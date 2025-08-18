@@ -326,6 +326,7 @@ export default function App() {
   const [minReviews, setMinReviews] = useState(50)
   const [openNow, setOpenNow] = useState(false)
   const [radius, setRadius] = useState(8000)
+  const [locLoading, setLocLoading] = useState(false);
 
   const [picked, setPicked] = useState<Result | null>(null)
   const [isLoading, setIsLoading] = useState(false)
@@ -406,13 +407,6 @@ export default function App() {
           else resolve([]);
         });
       });
-    // LoadScript가 아직 안 끝났으면 안전하게 중단
-    // (화면이 아예 죽지 않게 방어)
-    if (!(window as any).google?.maps?.places) {
-      setIsLoading(false);
-      setError(t.mapsFail);
-      return;
-    }
 
     // getDetails → Promise 헬퍼 (필드 최소화)
     const getDetails = (service: google.maps.places.PlacesService, placeId: string) =>
