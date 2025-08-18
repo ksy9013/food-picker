@@ -53,16 +53,20 @@ type CuisineKey = 'korean' | 'japanese' | 'chinese' | 'asian_other' | 'western';
 type CuisineItem = {
   key: CuisineKey;
   label: { en: string; ko: string };
-  keyword: string; // ← string으로 넓힘
+  keyword?: string;        // optional로 변경
+  type?: string;           // 추가: cuisine별 place type
 };
 
 const CUISINES: readonly CuisineItem[] = [
-  { key: 'korean', label: { en: 'Korean', ko: '한식' }, keyword: 'Korean' },
-  { key: 'japanese', label: { en: 'Japanese', ko: '일식' }, keyword: 'Japanese' },
-  { key: 'chinese', label: { en: 'Chinese', ko: '중식' }, keyword: 'Chinese' },
-  { key: 'asian_other', label: { en: 'Asian (Other)', ko: '아시안(기타)' }, keyword: 'Asian' },
-  { key: 'western', label: { en: 'Western', ko: '양식' }, keyword: 'Western' },
+  { key: 'korean', label: { en: 'Korean', ko: '한식' }, type: 'korean_restaurant' },
+  { key: 'japanese', label: { en: 'Japanese', ko: '일식' }, type: 'japanese_restaurant' },
+  { key: 'chinese', label: { en: 'Chinese', ko: '중식' }, type: 'chinese_restaurant' },
+  // 기타 아시안은 타입 랜덤(예: 태국/베트남/인도/인도네시아)
+  { key: 'asian_other', label: { en: 'Asian (Other)', ko: '아시안(기타)' } },
+  // 서양은 범주가 넓어서 아래에서 여러 타입 돌려서 합칠 거면 keyword 없이 처리
+  { key: 'western', label: { en: 'Western', ko: '양식' } },
 ] as const;
+
 
 
 const THEMES: Record<ThemeName, { mesh1: string; mesh2: string; acc: string; accText: string }> = {
@@ -228,10 +232,10 @@ export default function App() {
   const [lang, setLang] = useState<Lang>('ko')
   const t = I18N[lang]
 
-const isMobile = useMemo(() => {
-  if (typeof navigator === 'undefined') return false; // SSR 가드
-  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-}, []);
+  const isMobile = useMemo(() => {
+    if (typeof navigator === 'undefined') return false; // SSR 가드
+    return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  }, []);
 
   // 라이트 모드 디폴트
   const [isDark, setIsDark] = useState(() => {
@@ -317,46 +321,114 @@ const isMobile = useMemo(() => {
 
   const search = async () => {
     if (!mapRef.current) { setError(t.searchFail); return }
-    setError(null); setIsLoading(true)
+    setError(null);
+    setIsLoading(true);
+
+    // 콜백 → Promise 헬퍼
+    const nearby = (service: google.maps.places.PlacesService, req: google.maps.places.PlaceSearchRequest) =>
+      new Promise<google.maps.places.PlaceResult[]>((resolve) => {
+        service.nearbySearch(req, (results, status) => {
+          if (status === google.maps.places.PlacesServiceStatus.OK && results) resolve(results);
+          else resolve([]);
+        });
+      });
+
     try {
-      const location = await geocode()
-      mapRef.current.setCenter(location)
+      // 위치 결정 & 맵 센터 이동
+      const location = await geocode();
+      mapRef.current.setCenter(location);
 
-      const cuisine = CUISINES.find(c => c.key === cuisineKey)!
-      const service = new google.maps.places.PlacesService(mapRef.current)
+      // 기본 요청
+      const cuisine = CUISINES.find(c => c.key === cuisineKey)!;
+      const service = new google.maps.places.PlacesService(mapRef.current);
 
-      let keyword = cuisine.keyword
-      if (cuisineKey === "asian_other") {
-        // ✅ "아시안(기타)"일 경우 랜덤 키워드 뽑기
-        keyword = ASIAN_OTHER_KEYWORDS[Math.floor(Math.random() * ASIAN_OTHER_KEYWORDS.length)]
+      const baseReq: google.maps.places.PlaceSearchRequest = {
+        location,
+        radius,
+        openNow,
+        // ❌ keyword는 쓰지 않는다(오탐↑). 필요시 마지막 안전망에서만 고려.
+      };
+
+      // 타입 결정
+      let multiTypes: string[] | null = null;
+
+      if (cuisine.type) {
+        // 예: 'korean_restaurant', 'japanese_restaurant', 'chinese_restaurant'
+        (baseReq as any).type = cuisine.type;
+      } else if (cuisineKey === 'asian_other') {
+        // 기타 아시안: 여러 타입 병합
+        multiTypes = [
+          'thai_restaurant',
+          'vietnamese_restaurant',
+          'indian_restaurant',
+          // 아래는 환경에 따라 미지원일 수 있어 캐스팅 처리됨
+          'ramen_restaurant',
+          'sushi_restaurant'
+        ];
+      } else if (cuisineKey === 'western') {
+        // 양식: 넓은 범주 → 여러 타입 병합
+        multiTypes = [
+          'american_restaurant',
+          'italian_restaurant',
+          'french_restaurant',
+          'seafood_restaurant',
+          'steak_house',
+          'pizza_restaurant',
+          'mediterranean_restaurant',
+          'spanish_restaurant',
+          'greek_restaurant'
+        ];
+      } else {
+        // 마지막 안전망
+        (baseReq as any).type = 'restaurant';
       }
 
-      service.nearbySearch(
-        { location, radius, type: 'restaurant', keyword, openNow },
-        (results, status) => {
-          if (status !== google.maps.places.PlacesServiceStatus.OK || !results) {
-            setPicked(null); setError(t.noResults); setIsLoading(false); return
-          }
+      // 호출 & 합치기
+      let results: google.maps.places.PlaceResult[] = [];
 
-          const filtered = results.filter(r =>
-            (r.rating ?? 0) >= minRating &&
-            (r.user_ratings_total ?? 0) >= minReviews
-          )
+      if (!multiTypes) {
+        results = await nearby(service, baseReq);
+      } else {
+        const lists = await Promise.all(
+          multiTypes.map(tp => nearby(service, { ...baseReq, type: tp as any }))
+        );
+        const uniq = new Map<string, google.maps.places.PlaceResult>();
+        lists.flat().forEach(p => { if (p.place_id) uniq.set(p.place_id, p); });
+        results = Array.from(uniq.values());
+      }
 
-          const pool = filtered.length ? filtered : results
-          const choice = pool.length ? pickRandom(pool) : null
+      // 결과 없음
+      if (results.length === 0) {
+        setPicked(null);
+        setError(t.noResults);
+        return;
+      }
 
-          setPicked(choice)
-          if (!choice) setError(t.noMatch)
-          setIsLoading(false)
-        }
-      )
-    } catch {
-      setError(t.searchFail); setIsLoading(false)
+      // (선택) 정확 타입만 엄격히 남기기
+      if ((baseReq as any).type) {
+        const strictType = (baseReq as any).type as string;
+        results = results.filter(r => r.types?.includes(strictType as any));
+      }
+
+      // 별점/리뷰수 필터
+      const filtered = results.filter(r =>
+        (r.rating ?? 0) >= minRating &&
+        (r.user_ratings_total ?? 0) >= minReviews
+      );
+
+      const pool = filtered.length ? filtered : results;
+      const choice = pool.length ? pool[Math.floor(Math.random() * pool.length)] : null;
+
+      setPicked(choice);
+      if (!choice) setError(t.noMatch);
+    } catch (e) {
+      setPicked(null);
+      setError(t.searchFail);
+    } finally {
+      setIsLoading(false);
     }
-  }
+  };
 
-  // 👇 교체
   const placeUrl = useMemo(() => buildMapsUrl(picked), [picked])
   const pickedCenter = picked?.geometry?.location ? getLatLngLiteral(picked.geometry.location) : null
 
