@@ -436,7 +436,7 @@ export default function App() {
       } else if (cuisineKey === 'western') {
         multiTypes = [
           'american_restaurant', 'italian_restaurant', 'french_restaurant', 'seafood_restaurant',
-          'steak_house', 'pizza_restaurant', 'mediterranean_restaurant', 'spanish_restaurant', 'greek_restaurant'
+          'steakhouse', 'pizza_restaurant', 'mediterranean_restaurant', 'spanish_restaurant', 'greek_restaurant'
         ];
       } else {
         (baseReq as any).type = 'restaurant';
@@ -461,26 +461,22 @@ export default function App() {
         return;
       }
 
-      // ② (선택) 정확 타입만 엄격히 남기기
-      if ((baseReq as any).type) {
-        const strictType = (baseReq as any).type as string;
-        results = results.filter(r => r.types?.includes(strictType as any));
-      }
+
 
       // ③ 1차 오염 제거: 바/뷔페/퓨전(이름·주소) 컷
       results = results.filter(r => !r.types?.some(t => EXCLUDE_TYPES.includes(t as any)));
       results = results.filter(r => {
         const hay = `${r.name ?? ''} ${r.vicinity ?? r.formatted_address ?? ''}`;
-        return !EXCLUDE_NAME_RE.test(hay) && !EXCLUDE_FUSION_RE.test(hay);
+        return !EXCLUDE_NAME_RE.test(hay);
       });
 
+      // 한식일 때만 비(非)한식 힌트 & 퓨전 컷
       if (cuisineKey === 'korean') {
         results = results.filter(r => {
           const hay = `${r.name ?? ''} ${r.vicinity ?? r.formatted_address ?? ''}`;
-          return !NON_KOREAN_HINT_RE.test(hay);
+          return !NON_KOREAN_HINT_RE.test(hay) && !EXCLUDE_FUSION_RE.test(hay);
         });
       }
-
       // ④ 2차 정밀 검증(한식일 때만): servesCuisine로 Korean 보장 + Fusion 컷 (대상 확대)
       let refined = results;
       if (cuisineKey === 'korean' && results.length) {
@@ -541,12 +537,21 @@ export default function App() {
 
 
       // ⑤ 별점/리뷰수 필터
-      const filtered = refined.filter(r =>
-        (r.rating ?? 0) >= minRating &&
-        (r.user_ratings_total ?? 0) >= minReviews
-      );
-
-      const pool = filtered.length ? filtered : refined;
+      // 단계적 완화: [현재 조건] → [리뷰 20/별점 max(3.5, minRating-0.5)] → [무조건 허용]
+      const steps = [
+        { r: minRating, n: minReviews },
+        { r: Math.max(3.5, minRating - 0.5), n: Math.min(20, minReviews) },
+        { r: 0, n: 0 },
+      ];
+      let pool: Result[] = [];
+      for (const s of steps) {
+        pool = refined.filter(x =>
+          (x.rating ?? 0) >= s.r &&
+          (x.user_ratings_total ?? 0) >= s.n
+        );
+        if (pool.length) break;
+      }
+      if (!pool.length) pool = refined; // 혹시 몰라서 마지막 안전망
       const choice = pool.length ? pickRandom(pool) : null;
 
       setPicked(choice);
