@@ -406,19 +406,6 @@ export default function App() {
         });
       });
 
-    // getDetails → Promise 헬퍼 (필드 최소화)
-    const getDetails = (service: google.maps.places.PlacesService, placeId: string) =>
-      new Promise<google.maps.places.PlaceResult | null>((resolve) => {
-        service.getDetails(
-          {
-            placeId,
-            // TS에서 필드 리터럴 union이라 any 캐스팅
-            fields: ['place_id', 'name', 'types', 'servesCuisine', 'vicinity', 'formatted_address'] as any
-          },
-          (res, status) => resolve(status === google.maps.places.PlacesServiceStatus.OK && res ? res : null)
-        );
-      });
-
     try {
       const location = await geocode();
       mapRef.current.setCenter(location);
@@ -461,83 +448,25 @@ export default function App() {
         return;
       }
 
-
-
-      // ③ 1차 오염 제거: 바/뷔페/퓨전(이름·주소) 컷
+      // ③ 1차 오염 제거: 바/뷔페/퓨전 컷(전역)
       results = results.filter(r => !r.types?.some(t => EXCLUDE_TYPES.includes(t as any)));
       results = results.filter(r => {
         const hay = `${r.name ?? ''} ${r.vicinity ?? r.formatted_address ?? ''}`;
-        return !EXCLUDE_NAME_RE.test(hay);
+        return !EXCLUDE_NAME_RE.test(hay) && !EXCLUDE_FUSION_RE.test(hay);
       });
 
-      // 한식일 때만 비(非)한식 힌트 & 퓨전 컷
+      // 한식일 때만 비(非)한식 힌트 컷
       if (cuisineKey === 'korean') {
         results = results.filter(r => {
           const hay = `${r.name ?? ''} ${r.vicinity ?? r.formatted_address ?? ''}`;
-          return !NON_KOREAN_HINT_RE.test(hay) && !EXCLUDE_FUSION_RE.test(hay);
+          return !NON_KOREAN_HINT_RE.test(hay);
         });
       }
-      // ④ 2차 정밀 검증(한식일 때만): servesCuisine로 Korean 보장 + Fusion 컷 (대상 확대)
-      let refined = results;
-      if (cuisineKey === 'korean' && results.length) {
-        // '한식' 힌트 문자열
-        const isKoreanHint = (s: string) => /(korean|한식|bbq|삼겹|갈비|비빔밥|순두부)/i.test(s);
 
-        // ✅ Details 조회 "대상"을 넓힘:
-        // - korean_restaurant 타입이거나
-        // - 이름/주소에 한식 힌트가 있는 모든 후보
-        const candAll = results.filter(r => {
-          const hay = `${r.name ?? ''} ${r.vicinity ?? r.formatted_address ?? ''}`;
-          return (r.types?.includes('korean_restaurant') || isKoreanHint(hay));
-        });
+      // (④ 제거) → alias만 유지하면 아래 로직 변경 없음
+      const refined = results;
 
-        // 너무 많으면 상한(50) 두기 (리뷰 수 순 정렬)
-        const cand = candAll
-          .sort((a, b) => (b.user_ratings_total ?? 0) - (a.user_ratings_total ?? 0))
-          .slice(0, 50);
-
-        // Details 조회
-        const detailList = await Promise.all(
-          cand.map(p => p.place_id ? getDetails(service, p.place_id) : Promise.resolve(null))
-        );
-
-        // Details 기반 판정
-        const okIds = new Set<string>();
-        for (const d of detailList) {
-          if (!d?.place_id) continue;
-
-          const cuisines: string[] | undefined = (d as any)?.servesCuisine;
-          if (cuisines && cuisines.length) {
-            const hasKorean = cuisines.some(c => /korean/i.test(c));
-            const hasFusion = cuisines.some(c => /(fusion|pan[-\s]?asian)/i.test(c));
-            if (hasKorean && !hasFusion) okIds.add(d.place_id);
-            continue;
-          }
-
-          // servesCuisine 없으면 이름/주소 + 타입으로 보수적 판단
-          const hay = `${d?.name ?? ''} ${d?.vicinity ?? d?.formatted_address ?? ''}`;
-          const looksFusion = EXCLUDE_FUSION_RE.test(hay);
-          const likelyKorean = isKoreanHint(hay) || (d?.types ?? []).includes('korean_restaurant');
-          if (!looksFusion && likelyKorean) okIds.add(d.place_id);
-        }
-
-        // Details 통과 우선 적용
-        let after = results.filter(r => r.place_id && okIds.has(r.place_id));
-
-        // 너무 줄면 안전 fallback: 여전히 fusion 텍스트 컷 + korean_restaurant 타입만
-        if (after.length < Math.min(3, results.length)) {
-          after = results.filter(r => {
-            const hay = `${r.name ?? ''} ${r.vicinity ?? r.formatted_address ?? ''}`;
-            return !EXCLUDE_FUSION_RE.test(hay) && r.types?.includes('korean_restaurant');
-          });
-        }
-
-        if (after.length) refined = after;
-      }
-
-
-      // ⑤ 별점/리뷰수 필터
-      // 단계적 완화: [현재 조건] → [리뷰 20/별점 max(3.5, minRating-0.5)] → [무조건 허용]
+      // ⑤ 별점/리뷰수: 단계적 완화
       const steps = [
         { r: minRating, n: minReviews },
         { r: Math.max(3.5, minRating - 0.5), n: Math.min(20, minReviews) },
@@ -551,9 +480,9 @@ export default function App() {
         );
         if (pool.length) break;
       }
-      if (!pool.length) pool = refined; // 혹시 몰라서 마지막 안전망
-      const choice = pool.length ? pickRandom(pool) : null;
+      if (!pool.length) pool = refined;
 
+      const choice = pool.length ? pickRandom(pool) : null;
       setPicked(choice);
       if (!choice) setError(t.noMatch);
     } catch (e) {
