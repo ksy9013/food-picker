@@ -381,8 +381,6 @@ export default function App() {
     return loc
   }
 
-  const pickRandom = (items: Result[]) => items[Math.floor(Math.random() * items.length)]
-
   const ASIAN_OTHER_TYPES = [
     'thai_restaurant',
     'vietnamese_restaurant',
@@ -424,7 +422,6 @@ const search = async () => {
     const location = await geocode();
     mapRef.current.setCenter(location);
 
-    const cuisine = CUISINES.find(c => c.key === cuisineKey)!;
     const service = new google.maps.places.PlacesService(mapRef.current);
 
     // 0) 공통 검색 파라미터
