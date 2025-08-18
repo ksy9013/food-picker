@@ -392,106 +392,143 @@ export default function App() {
     'ramen_restaurant',
   ] as const;
 
-  const search = async () => {
-    if (!mapRef.current) { setError(t.searchFail); return }
-    setError(null);
-    setIsLoading(true);
+const search = async () => {
+  if (!mapRef.current) { setError(t.searchFail); return }
+  setError(null);
+  setIsLoading(true);
 
-    // nearbySearch → Promise 헬퍼
-    const nearby = (service: google.maps.places.PlacesService, req: google.maps.places.PlaceSearchRequest) =>
-      new Promise<google.maps.places.PlaceResult[]>((resolve) => {
-        service.nearbySearch(req, (results, status) => {
-          if (status === google.maps.places.PlacesServiceStatus.OK && results) resolve(results);
-          else resolve([]);
-        });
+  // nearbySearch → Promise 헬퍼
+  const nearby = (service: google.maps.places.PlacesService, req: google.maps.places.PlaceSearchRequest) =>
+    new Promise<google.maps.places.PlaceResult[]>((resolve) => {
+      service.nearbySearch(req, (results, status) => {
+        if (status === google.maps.places.PlacesServiceStatus.OK && results) resolve(results);
+        else resolve([]);
       });
+    });
 
-    try {
-      const location = await geocode();
-      mapRef.current.setCenter(location);
+  // 여러 type을 돌려서 모으기(중복 제거)
+  const byTypes = async (
+    service: google.maps.places.PlacesService,
+    base: google.maps.places.PlaceSearchRequest,
+    types: string[]
+  ) => {
+    const uniq = new Map<string, google.maps.places.PlaceResult>();
+    for (const tp of types) {
+      const list = await nearby(service, { ...base, type: tp as any });
+      list.forEach(p => { if (p.place_id) uniq.set(p.place_id, p); });
+    }
+    return Array.from(uniq.values());
+  };
 
-      const cuisine = CUISINES.find(c => c.key === cuisineKey)!;
-      const service = new google.maps.places.PlacesService(mapRef.current);
+  try {
+    const location = await geocode();
+    mapRef.current.setCenter(location);
 
-      const baseReq: google.maps.places.PlaceSearchRequest = { location, radius, openNow };
-      let multiTypes: string[] | null = null;
+    const cuisine = CUISINES.find(c => c.key === cuisineKey)!;
+    const service = new google.maps.places.PlacesService(mapRef.current);
 
-      if (cuisine.type) {
-        (baseReq as any).type = cuisine.type; // 예: 'korean_restaurant'
-      } else if (cuisineKey === 'asian_other') {
-        multiTypes = [...ASIAN_OTHER_TYPES];
-      } else if (cuisineKey === 'western') {
-        multiTypes = [
-          'american_restaurant', 'italian_restaurant', 'french_restaurant', 'seafood_restaurant',
-          'steakhouse', 'pizza_restaurant', 'mediterranean_restaurant', 'spanish_restaurant', 'greek_restaurant'
-        ];
-      } else {
-        (baseReq as any).type = 'restaurant';
+    // 0) 공통 검색 파라미터
+    const baseReq: google.maps.places.PlaceSearchRequest = { location, radius, openNow };
+
+    // 1) cuisine별 1차 type 후보 + 2차 keyword 폴백
+    let typeCandidates: string[] = [];
+    let keywordFallbacks: string[] = [];
+
+    if (cuisineKey === 'korean') {
+      typeCandidates = ['korean_restaurant'];
+      keywordFallbacks = ['korean', 'korean bbq', '한식'];
+    } else if (cuisineKey === 'japanese') {
+      typeCandidates = ['japanese_restaurant', 'sushi_restaurant', 'ramen_restaurant'];
+      keywordFallbacks = ['japanese', 'sushi', 'ramen', '일식', '스시', '라멘'];
+    } else if (cuisineKey === 'chinese') {
+      typeCandidates = ['chinese_restaurant'];
+      keywordFallbacks = ['chinese', 'dim sum', 'szechuan', 'sichuan', '중식', '딤섬'];
+    } else if (cuisineKey === 'asian_other') {
+      typeCandidates = [...ASIAN_OTHER_TYPES]; // 태국/베트남/인도/인니/스시/라멘
+      keywordFallbacks = ['thai', 'vietnamese', 'indian', 'indonesian'];
+    } else if (cuisineKey === 'western') {
+      typeCandidates = [
+        'american_restaurant','italian_restaurant','french_restaurant','seafood_restaurant',
+        'steakhouse','pizza_restaurant','mediterranean_restaurant','spanish_restaurant','greek_restaurant'
+      ];
+      keywordFallbacks = ['american','italian','seafood','steak','pizza','mediterranean','spanish','greek'];
+    } else {
+      // 혹시나
+      typeCandidates = ['restaurant'];
+    }
+
+    // 2) 1차: type들로 시도
+    let results: google.maps.places.PlaceResult[] = [];
+    if (typeCandidates.length === 1) {
+      // 단일 타입이면 한 번만
+      results = await nearby(service, { ...baseReq, type: typeCandidates[0] as any });
+    } else {
+      // 여러 타입이면 합치기
+      results = await byTypes(service, baseReq, typeCandidates);
+    }
+
+    // 3) 2차: 완전 0건이면 → restaurant + keyword 폴백(첫 성공 지점에서 멈춤)
+    if (results.length === 0 && keywordFallbacks.length) {
+      for (const kw of keywordFallbacks) {
+        const list = await nearby(service, { ...baseReq, type: 'restaurant', keyword: kw });
+        if (list.length) { results = list; break; }
       }
+    }
 
-      // ① 검색
-      let results: google.maps.places.PlaceResult[] = [];
-      if (!multiTypes) {
-        results = await nearby(service, baseReq);
-      } else {
-        const lists = await Promise.all(
-          multiTypes.map(tp => nearby(service, { ...baseReq, type: tp as any }))
-        );
-        const uniq = new Map<string, google.maps.places.PlaceResult>();
-        lists.flat().forEach(p => { if (p.place_id) uniq.set(p.place_id, p); });
-        results = Array.from(uniq.values());
-      }
+    if (results.length === 0) {
+      setPicked(null);
+      setError(t.noResults);
+      return;
+    }
 
-      if (results.length === 0) {
-        setPicked(null);
-        setError(t.noResults);
-        return;
-      }
+    // 4) 전역 제외: bar/night_club + buffet + fusion 텍스트 컷
+    results = results.filter(r => !r.types?.some(t => EXCLUDE_TYPES.includes(t as any)));
+    results = results.filter(r => {
+      const hay = `${r.name ?? ''} ${r.vicinity ?? r.formatted_address ?? ''}`;
+      return !EXCLUDE_NAME_RE.test(hay) && !EXCLUDE_FUSION_RE.test(hay);
+    });
 
-      // ③ 1차 오염 제거: 바/뷔페/퓨전 컷(전역)
-      results = results.filter(r => !r.types?.some(t => EXCLUDE_TYPES.includes(t as any)));
+    // 한식 선택 시 비(非)한식 힌트 컷(스시/라멘/딤섬 등)
+    if (cuisineKey === 'korean') {
       results = results.filter(r => {
         const hay = `${r.name ?? ''} ${r.vicinity ?? r.formatted_address ?? ''}`;
-        return !EXCLUDE_NAME_RE.test(hay) && !EXCLUDE_FUSION_RE.test(hay);
+        return !NON_KOREAN_HINT_RE.test(hay);
       });
-
-      // 한식일 때만 비(非)한식 힌트 컷
-      if (cuisineKey === 'korean') {
-        results = results.filter(r => {
-          const hay = `${r.name ?? ''} ${r.vicinity ?? r.formatted_address ?? ''}`;
-          return !NON_KOREAN_HINT_RE.test(hay);
-        });
-      }
-
-      // (④ 제거) → alias만 유지하면 아래 로직 변경 없음
-      const refined = results;
-
-      // ⑤ 별점/리뷰수: 단계적 완화
-      const steps = [
-        { r: minRating, n: minReviews },
-        { r: Math.max(3.5, minRating - 0.5), n: Math.min(20, minReviews) },
-        { r: 0, n: 0 },
-      ];
-      let pool: Result[] = [];
-      for (const s of steps) {
-        pool = refined.filter(x =>
-          (x.rating ?? 0) >= s.r &&
-          (x.user_ratings_total ?? 0) >= s.n
-        );
-        if (pool.length) break;
-      }
-      if (!pool.length) pool = refined;
-
-      const choice = pool.length ? pickRandom(pool) : null;
-      setPicked(choice);
-      if (!choice) setError(t.noMatch);
-    } catch (e) {
-      setPicked(null);
-      setError(t.searchFail);
-    } finally {
-      setIsLoading(false);
     }
-  };
+
+    if (results.length === 0) {
+      setPicked(null);
+      setError(t.noResults);
+      return;
+    }
+
+    // 5) 별점/리뷰수 단계적 완화
+    const steps = [
+      { r: minRating, n: minReviews },
+      { r: Math.max(3.5, minRating - 0.5), n: Math.min(20, minReviews) },
+      { r: 0, n: 0 },
+    ];
+    let pool: Result[] = [];
+    for (const s of steps) {
+      pool = results.filter(x =>
+        (x.rating ?? 0) >= s.r &&
+        (x.user_ratings_total ?? 0) >= s.n
+      );
+      if (pool.length) break;
+    }
+    if (!pool.length) pool = results;
+
+    const choice = pool[Math.floor(Math.random() * pool.length)] ?? null;
+    setPicked(choice);
+    if (!choice) setError(t.noMatch);
+  } catch (e) {
+    setPicked(null);
+    setError(t.searchFail);
+  } finally {
+    setIsLoading(false);
+  }
+};
+
 
 
   const placeUrl = useMemo(() => buildMapsUrl(picked), [picked])
